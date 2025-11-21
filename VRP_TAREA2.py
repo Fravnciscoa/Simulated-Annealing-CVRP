@@ -8,11 +8,14 @@ Autores: [AGREGAR NOMBRES Y RUT DE TODOS LOS INTEGRANTES]
 Fecha: Noviembre 2025
 """
 
+import csv
+import time
+from datetime import datetime
 import math
 import random
-import time
 import copy
 from collections import namedtuple
+import numpy as np
 
 # Opcional: para gráficos
 try:
@@ -25,29 +28,28 @@ except ImportError:
 # ============================
 # PARÁMETROS DEL RECOCIDO SIMULADO
 # ============================
-
 # Parámetros de temperatura
-TEMPERATURA_INICIAL = 1000.0      # Temperatura inicial alta para exploración
-TEMPERATURA_MINIMA = 0.01          # Temperatura mínima (criterio de parada)
-ALPHA = 0.995                      # Factor de enfriamiento (0.95 - 0.999)
+TEMPERATURA_INICIAL = 1500.0  # Temperatura inicial alta para exploración
+TEMPERATURA_MINIMA = 0.01  # Temperatura mínima (criterio de parada)
+ALPHA = 0.995  # Factor de enfriamiento (0.95 - 0.999)
 
 # Parámetros de iteración
-ITERACIONES_POR_TEMPERATURA = 100  # Cuántas iteraciones hacer a cada temperatura
-MAX_ITERACIONES_SIN_MEJORA = 5000  # Parada adicional si no mejora
+ITERACIONES_POR_TEMPERATURA = 160  # Cuántas iteraciones hacer a cada temperatura
+MAX_ITERACIONES_SIN_MEJORA = 1000000  # Parada adicional si no mejora
+
+# Número de ejecuciones para estadísticas
+NUMERO_EJECUCIONES = 10
 
 # Semilla aleatoria para reproducibilidad (comentar para resultados aleatorios)
 SEMILLA_ALEATORIA = 42
-random.seed(SEMILLA_ALEATORIA)
 
 # Configuración de visualización
-MOSTRAR_GRAFICO_FINAL = True       # Mostrar gráfico de rutas al final
-MOSTRAR_CONVERGENCIA = True        # Mostrar gráfico de convergencia del algoritmo
-
+MOSTRAR_GRAFICO_FINAL = True  # Mostrar gráfico de rutas al final
+MOSTRAR_CONVERGENCIA = True  # Mostrar gráfico de convergencia del algoritmo
 
 # ============================
 # ESTRUCTURAS DE DATOS
 # ============================
-
 Nodo = namedtuple("Nodo", ["id", "x", "y", "demanda"])
 
 
@@ -177,9 +179,144 @@ class Solucion:
 
 
 # ============================
+# CLASE PARA REGISTRO DE RESULTADOS
+# ============================
+class LogResultados:
+    """Clase para registrar y generar tabla de resultados de múltiples ejecuciones"""
+    
+    def __init__(self, nombre_instancia):
+        self.nombre_instancia = nombre_instancia
+        self.resultados = {}  # Diccionario por instancia
+    
+    def agregar_ejecucion(self, instancia, numero_ejecucion, costo):
+        """Agrega el resultado de una ejecución"""
+        if instancia not in self.resultados:
+            self.resultados[instancia] = []
+        self.resultados[instancia].append({
+            'ejecucion': numero_ejecucion,
+            'costo': costo
+        })
+    
+    def calcular_estadisticas(self, instancia):
+        """Calcula media y desviación estándar para una instancia"""
+        if instancia not in self.resultados or len(self.resultados[instancia]) == 0:
+            return None, None
+        
+        costos = [r['costo'] for r in self.resultados[instancia]]
+        media = np.mean(costos)
+        desviacion = np.std(costos, ddof=1)  # Desviación estándar muestral
+        
+        return media, desviacion
+    
+    def generar_tabla(self):
+        """Genera la tabla de resultados en formato texto"""
+        print("\n" + "="*80)
+        print(f"TABLA DE RESULTADOS - {self.nombre_instancia}")
+        print("="*80)
+        
+        # Obtener todas las instancias
+        instancias = sorted(self.resultados.keys())
+        
+        if not instancias:
+            print("No hay resultados para mostrar.")
+            return
+        
+        # Encabezado
+        header = "ejecución |"
+        for inst in instancias:
+            header += f" {inst:^12} |"
+        print(header)
+        print("-" * len(header))
+        
+        # Determinar el número máximo de ejecuciones
+        max_ejecuciones = max(len(self.resultados[inst]) for inst in instancias)
+        
+        # Filas de datos
+        for i in range(max_ejecuciones):
+            fila = f"    {i+1:2d}    |"
+            for inst in instancias:
+                if i < len(self.resultados[inst]):
+                    costo = self.resultados[inst][i]['costo']
+                    fila += f" {costo:12.2f} |"
+                else:
+                    fila += f" {'-':^12} |"
+            print(fila)
+        
+        # Separador antes de estadísticas
+        print("-" * len(header))
+        
+        # Fila de media
+        fila_media = "   media   |"
+        for inst in instancias:
+            media, _ = self.calcular_estadisticas(inst)
+            if media is not None:
+                fila_media += f" {media:12.2f} |"
+            else:
+                fila_media += f" {'-':^12} |"
+        print(fila_media)
+        
+        # Fila de desviación estándar
+        fila_desv = "desviación |"
+        fila_desv += "\n estándar  |"
+        for inst in instancias:
+            _, desviacion = self.calcular_estadisticas(inst)
+            if desviacion is not None:
+                fila_desv += f" {desviacion:12.2f} |"
+            else:
+                fila_desv += f" {'-':^12} |"
+        print(fila_desv)
+        
+        print("="*80 + "\n")
+    
+    def exportar_csv(self, nombre_archivo="resultados.csv"):
+        """Exporta los resultados a un archivo CSV"""
+        instancias = sorted(self.resultados.keys())
+        
+        if not instancias:
+            print("No hay resultados para exportar.")
+            return
+        
+        with open(nombre_archivo, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            
+            # Encabezado
+            header = ['ejecución'] + instancias
+            writer.writerow(header)
+            
+            # Determinar el número máximo de ejecuciones
+            max_ejecuciones = max(len(self.resultados[inst]) for inst in instancias)
+            
+            # Escribir datos
+            for i in range(max_ejecuciones):
+                fila = [i + 1]
+                for inst in instancias:
+                    if i < len(self.resultados[inst]):
+                        fila.append(f"{self.resultados[inst][i]['costo']:.2f}")
+                    else:
+                        fila.append('')
+                writer.writerow(fila)
+            
+            # Fila vacía
+            writer.writerow([])
+            
+            # Estadísticas
+            fila_media = ['media']
+            fila_desv = ['desviación estándar']
+            
+            for inst in instancias:
+                media, desviacion = self.calcular_estadisticas(inst)
+                fila_media.append(f"{media:.2f}" if media is not None else '')
+                fila_desv.append(f"{desviacion:.2f}" if desviacion is not None else '')
+            
+            writer.writerow(fila_media)
+            writer.writerow(fila_desv)
+        
+        print(f"Resultados exportados a: {nombre_archivo}")
+
+
+# ============================
 # LECTURA DE ARCHIVOS .VRP
 # ============================
-
 def leer_archivo_vrp(nombre_archivo):
     """
     Lee un archivo en formato TSPLIB/CVRPLIB (.vrp)
@@ -259,18 +396,16 @@ def leer_archivo_vrp(nombre_archivo):
 # ============================
 # GENERACIÓN DE SOLUCIÓN INICIAL
 # ============================
-
 def generar_solucion_inicial_voraz(instancia):
     """
     Genera una solución inicial usando heurística del vecino más cercano
     Construye rutas secuencialmente, agregando el cliente no visitado más cercano
-    CORREGIDO: Ahora garantiza que todas las rutas respeten la capacidad
     """
     clientes_no_asignados = set(c.id for c in instancia.clientes)
     rutas = [[] for _ in range(instancia.num_vehiculos)]
     cargas = [0] * instancia.num_vehiculos
-    
     vehiculo_actual = 0
+    
     deposito_id = instancia.deposito.id
     demandas = {n.id: n.demanda for n in instancia.nodos}
     
@@ -291,7 +426,6 @@ def generar_solucion_inicial_voraz(instancia):
             # Verificar si cabe en el vehículo actual
             if cargas[vehiculo_actual] + demanda_cliente <= instancia.capacidad_vehiculo:
                 distancia = instancia.distancia(ultimo_nodo, cliente_id)
-                
                 if distancia < mejor_distancia:
                     mejor_distancia = distancia
                     mejor_cliente = cliente_id
@@ -305,9 +439,8 @@ def generar_solucion_inicial_voraz(instancia):
             # Cambiar al siguiente vehículo
             vehiculo_actual += 1
             
-            # CORRECCIÓN: Si nos quedamos sin vehículos, crear más vehículos
+            # Si nos quedamos sin vehículos, crear más vehículos
             if vehiculo_actual >= instancia.num_vehiculos:
-                # Agregar más vehículos si es necesario
                 instancia.num_vehiculos += 1
                 rutas.append([])
                 cargas.append(0)
@@ -315,7 +448,7 @@ def generar_solucion_inicial_voraz(instancia):
     
     solucion = Solucion(instancia, rutas)
     
-    # CORRECCIÓN: Verificar que la solución sea factible
+    # Verificar que la solución sea factible
     if not solucion.es_factible():
         print("[ERROR CRÍTICO] No se pudo generar una solución inicial factible")
         print("Verificando cargas:")
@@ -330,11 +463,8 @@ def generar_solucion_inicial_voraz(instancia):
 # ============================
 # OPERADORES DE VECINDAD
 # ============================
-
 def swap_intra_ruta(solucion):
-    """
-    Operador 2-opt: intercambia dos clientes dentro de la misma ruta
-    """
+    """Operador 2-opt: intercambia dos clientes dentro de la misma ruta"""
     nueva_solucion = solucion.copiar()
     
     # Seleccionar ruta no vacía aleatoriamente
@@ -391,13 +521,12 @@ def swap_inter_ruta(solucion):
     nueva_carga2 = carga2 - demandas[cliente2] + demandas[cliente1]
     
     # Solo hacer el swap si es factible
-    if (nueva_carga1 <= instancia.capacidad_vehiculo and 
+    if (nueva_carga1 <= instancia.capacidad_vehiculo and
         nueva_carga2 <= instancia.capacidad_vehiculo):
-        
         nueva_solucion.rutas[idx_ruta1][pos1] = cliente2
         nueva_solucion.rutas[idx_ruta2][pos2] = cliente1
-        nueva_solucion.invalidar_cache()
     
+    nueva_solucion.invalidar_cache()
     return nueva_solucion
 
 
@@ -445,15 +574,13 @@ def relocate(solucion):
             pos_insercion = 0
         
         nueva_solucion.rutas[idx_destino].insert(pos_insercion, cliente)
-        nueva_solucion.invalidar_cache()
     
+    nueva_solucion.invalidar_cache()
     return nueva_solucion
 
 
 def reverse_subruta(solucion):
-    """
-    Operador 2-opt: invierte un segmento de una ruta
-    """
+    """Operador 2-opt: invierte un segmento de una ruta"""
     nueva_solucion = solucion.copiar()
     
     # Seleccionar ruta no vacía con al menos 2 elementos
@@ -474,32 +601,62 @@ def reverse_subruta(solucion):
     nueva_solucion.invalidar_cache()
     return nueva_solucion
 
+def two_opt_inter_route(rutas, demandas, capacidad):
+    import random
+    if len(rutas) < 2:
+        return None
+
+    # Seleccionar dos rutas distintas
+    r1, r2 = random.sample(range(len(rutas)), 2)
+
+    ruta1 = rutas[r1]
+    ruta2 = rutas[r2]
+
+    if len(ruta1) < 2 or len(ruta2) < 2:
+        return None
+
+    # Cortes aleatorios dentro de ambas rutas
+    i = random.randint(1, len(ruta1) - 1)
+    j = random.randint(1, len(ruta2) - 1)
+
+    # Crear nuevas rutas intercambiando segmentos
+    nueva1 = ruta1[:i] + ruta2[j:]
+    nueva2 = ruta2[:j] + ruta1[i:]
+
+    # Validar capacidad
+    demanda1 = sum(demandas[c] for c in nueva1)
+    demanda2 = sum(demandas[c] for c in nueva2)
+
+    if demanda1 > capacidad or demanda2 > capacidad:
+        return None
+
+    nuevas_rutas = rutas.copy()
+    nuevas_rutas[r1] = nueva1
+    nuevas_rutas[r2] = nueva2
+
+    return nuevas_rutas
 
 def generar_vecino(solucion):
-    """
-    Genera una solución vecina aplicando un operador aleatorio
-    """
+    """Genera una solución vecina aplicando un operador aleatorio"""
     operadores = [
         swap_intra_ruta,
         swap_inter_ruta,
         relocate,
-        reverse_subruta
+        reverse_subruta,
+        two_opt_inter_route
     ]
     
     # Seleccionar operador aleatorio
     operador = random.choice(operadores)
-    
     return operador(solucion)
 
 
 # ============================
 # RECOCIDO SIMULADO
 # ============================
-
 def criterio_metropolis(costo_actual, costo_nuevo, temperatura):
     """
     Decide si aceptar una nueva solución según el criterio de Metropolis
-    
     - Si el nuevo costo es mejor (menor), siempre acepta
     - Si el nuevo costo es peor (mayor), acepta con probabilidad exp(-delta/T)
     """
@@ -511,7 +668,6 @@ def criterio_metropolis(costo_actual, costo_nuevo, temperatura):
     
     delta = costo_nuevo - costo_actual
     probabilidad = math.exp(-delta / temperatura)
-    
     return random.random() < probabilidad
 
 
@@ -535,7 +691,7 @@ def recocido_simulado(instancia, solucion_inicial=None, verbose=True):
             print("Generando solución inicial voraz...")
         solucion_inicial = generar_solucion_inicial_voraz(instancia)
     
-    # CORRECCIÓN: Verificar factibilidad inicial y rechazar si no es válida
+    # Verificar factibilidad inicial y rechazar si no es válida
     if not solucion_inicial.es_factible():
         print("[ERROR CRÍTICO] La solución inicial no es factible.")
         print("No se puede continuar con el recocido simulado.")
@@ -573,7 +729,6 @@ def recocido_simulado(instancia, solucion_inicial=None, verbose=True):
     
     # Bucle principal
     while temperatura > TEMPERATURA_MINIMA and iteraciones_sin_mejora < MAX_ITERACIONES_SIN_MEJORA:
-        
         for _ in range(ITERACIONES_POR_TEMPERATURA):
             iteracion += 1
             iteraciones_sin_mejora += 1
@@ -581,7 +736,7 @@ def recocido_simulado(instancia, solucion_inicial=None, verbose=True):
             # Generar solución vecina
             solucion_vecina = generar_vecino(solucion_actual)
             
-            # CORRECCIÓN: Verificar factibilidad ANTES de calcular costo
+            # Verificar factibilidad ANTES de calcular costo
             if not solucion_vecina.es_factible():
                 continue
             
@@ -611,7 +766,7 @@ def recocido_simulado(instancia, solucion_inicial=None, verbose=True):
     
     tiempo_total = time.time() - inicio
     
-    # CORRECCIÓN: Verificación final de factibilidad
+    # Verificación final de factibilidad
     if not mejor_solucion.es_factible():
         print("[ERROR] La mejor solución encontrada no es factible. Esto no debería ocurrir.")
     
@@ -640,12 +795,8 @@ def recocido_simulado(instancia, solucion_inicial=None, verbose=True):
 # ============================
 # VISUALIZACIÓN
 # ============================
-
 def graficar_solucion(solucion, titulo="Solución CVRP"):
-    """
-    Grafica las rutas de la solución
-    CORREGIDO: Ajusta mejor el tamaño del gráfico y la leyenda
-    """
+    """Grafica las rutas de la solución"""
     if not MATPLOTLIB_DISPONIBLE:
         print("[Aviso] matplotlib no disponible. No se puede graficar.")
         return
@@ -654,7 +805,6 @@ def graficar_solucion(solucion, titulo="Solución CVRP"):
     coords = {n.id: (n.x, n.y) for n in instancia.nodos}
     deposito = instancia.deposito.id
     
-    # CORRECCIÓN: Usar figsize más grande y ajustar layout
     fig, ax = plt.subplots(figsize=(14, 10))
     
     # Colores para cada vehículo - usar paleta con más colores
@@ -668,36 +818,32 @@ def graficar_solucion(solucion, titulo="Solución CVRP"):
         
         # Construir ruta completa: depósito -> clientes -> depósito
         ruta_completa = [deposito] + ruta + [deposito]
-        
         xs = [coords[nodo][0] for nodo in ruta_completa]
         ys = [coords[nodo][1] for nodo in ruta_completa]
         
-        ax.plot(xs, ys, 'o-', color=colores[i], linewidth=2, 
+        ax.plot(xs, ys, 'o-', color=colores[i], linewidth=2,
                 markersize=6, label=f'Vehículo {i}')
         rutas_dibujadas += 1
     
     # Marcar depósito
-    ax.plot(coords[deposito][0], coords[deposito][1], 's', 
+    ax.plot(coords[deposito][0], coords[deposito][1], 's',
             color='red', markersize=15, label='Depósito', zorder=5)
     
-    # CORRECCIÓN: Mostrar leyenda fuera del área de graficado
-    # Si hay muchos vehículos, colocar la leyenda en dos columnas
+    # Mostrar leyenda fuera del área de graficado
     if rutas_dibujadas > 15:
-        ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), 
-                 ncol=2, fontsize=8, framealpha=0.9)
+        ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1),
+                  ncol=2, fontsize=8, framealpha=0.9)
     else:
-        ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), 
-                 fontsize=9, framealpha=0.9)
+        ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1),
+                  fontsize=9, framealpha=0.9)
     
     ax.set_title(f"{titulo}\nCosto total: {solucion.get_costo():.2f}", fontsize=12)
     ax.set_xlabel("Coordenada X", fontsize=10)
     ax.set_ylabel("Coordenada Y", fontsize=10)
     ax.grid(True, alpha=0.3)
     
-    # CORRECCIÓN: Ajustar el layout para que la leyenda no se corte
     plt.tight_layout()
-    plt.subplots_adjust(right=0.85)  # Dar espacio a la leyenda
-    
+    plt.subplots_adjust(right=0.85)
     plt.show()
 
 
@@ -710,16 +856,16 @@ def graficar_convergencia(historial, titulo="Convergencia del Recocido Simulado"
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
     
     # Gráfico de mejor costo
-    ax1.plot(historial['iteraciones'], historial['mejor_costo'], 
-            'b-', linewidth=2)
+    ax1.plot(historial['iteraciones'], historial['mejor_costo'],
+             'b-', linewidth=2)
     ax1.set_xlabel('Iteración')
     ax1.set_ylabel('Mejor Costo')
     ax1.set_title('Evolución del Mejor Costo')
     ax1.grid(True, alpha=0.3)
     
     # Gráfico de temperatura
-    ax2.plot(historial['iteraciones'], historial['temperatura'], 
-            'r-', linewidth=2)
+    ax2.plot(historial['iteraciones'], historial['temperatura'],
+             'r-', linewidth=2)
     ax2.set_xlabel('Iteración')
     ax2.set_ylabel('Temperatura')
     ax2.set_title('Esquema de Enfriamiento')
@@ -734,12 +880,10 @@ def graficar_convergencia(historial, titulo="Convergencia del Recocido Simulado"
 # ============================
 # FUNCIÓN PRINCIPAL
 # ============================
-
 def main():
     """Función principal para ejecutar el recocido simulado en las 3 instancias"""
-    
     print("="*60)
-    print(" CVRP - RECOCIDO SIMULADO")
+    print("     CVRP - RECOCIDO SIMULADO")
     print("="*60)
     
     # Archivos de instancias a resolver
@@ -749,47 +893,77 @@ def main():
         "Dificil.vrp"
     ]
     
-    resultados = []
+    # Crear registro de resultados global
+    log_global = LogResultados("Todas las Instancias")
+    
+    resultados_por_instancia = {}
     
     for i, archivo in enumerate(archivos_instancias, 1):
         print(f"\n{'='*60}")
-        print(f" INSTANCIA {i}: {archivo}")
+        print(f"  INSTANCIA {i}: {archivo}")
         print(f"{'='*60}")
         
         try:
             # Leer instancia
             instancia = leer_archivo_vrp(archivo)
             
-            # Ejecutar recocido simulado
-            mejor_solucion, historial = recocido_simulado(instancia, verbose=True)
+            # Ejecutar múltiples veces
+            print(f"\nEjecutando {NUMERO_EJECUCIONES} ejecuciones...")
             
-            # Verificar que se obtuvo una solución válida
-            if mejor_solucion is None:
-                print(f"[ERROR] No se pudo resolver la instancia '{archivo}'")
-                continue
+            nombre_corto = archivo.replace('.vrp', '')
+            resultados_por_instancia[nombre_corto] = []
             
-            # Guardar resultados
-            resultados.append({
-                'archivo': archivo,
-                'instancia': instancia,
-                'solucion': mejor_solucion,
-                'historial': historial
-            })
+            for ejecucion in range(1, NUMERO_EJECUCIONES + 1):
+                print(f"\n--- Ejecución {ejecucion}/{NUMERO_EJECUCIONES} ---")
+                
+                # Cambiar semilla para cada ejecución
+                random.seed(SEMILLA_ALEATORIA + ejecucion)
+                
+                # Ejecutar recocido simulado
+                mejor_solucion, historial = recocido_simulado(instancia, verbose=False)
+                
+                # Verificar que se obtuvo una solución válida
+                if mejor_solucion is None:
+                    print(f"[ERROR] No se pudo resolver la ejecución {ejecucion}")
+                    continue
+                
+                costo_final = mejor_solucion.get_costo()
+                print(f"Costo obtenido: {costo_final:.2f}")
+                
+                # Registrar resultado
+                log_global.agregar_ejecucion(nombre_corto, ejecucion, costo_final)
+                resultados_por_instancia[nombre_corto].append({
+                    'solucion': mejor_solucion,
+                    'historial': historial,
+                    'costo': costo_final
+                })
             
-            # Graficar solución
-            if MOSTRAR_GRAFICO_FINAL:
-                graficar_solucion(mejor_solucion, 
-                                titulo=f"Instancia {i}: {instancia.nombre}")
-            
-            # Graficar convergencia
-            if MOSTRAR_CONVERGENCIA:
-                graficar_convergencia(historial, 
-                                    titulo=f"Convergencia - Instancia {i}")
+            # Mostrar mejor solución de esta instancia
+            if resultados_por_instancia[nombre_corto]:
+                mejor_idx = min(range(len(resultados_por_instancia[nombre_corto])),
+                               key=lambda x: resultados_por_instancia[nombre_corto][x]['costo'])
+                
+                mejor_resultado = resultados_por_instancia[nombre_corto][mejor_idx]
+                
+                print(f"\n=== MEJOR SOLUCIÓN DE {nombre_corto} ===")
+                print(f"Ejecución: {mejor_idx + 1}")
+                print(mejor_resultado['solucion'])
+                
+                # Graficar mejor solución
+                if MOSTRAR_GRAFICO_FINAL:
+                    graficar_solucion(mejor_resultado['solucion'],
+                                    titulo=f"Mejor Solución - {nombre_corto}")
+                
+                # Graficar convergencia de la mejor ejecución
+                if MOSTRAR_CONVERGENCIA:
+                    graficar_convergencia(mejor_resultado['historial'],
+                                        titulo=f"Convergencia - {nombre_corto} (Ejecución {mejor_idx + 1})")
         
         except FileNotFoundError:
             print(f"[ERROR] No se encontró el archivo '{archivo}'")
             print(f"Asegúrate de que el archivo esté en el mismo directorio que este script.")
             continue
+        
         except Exception as e:
             print(f"[ERROR] Error al procesar '{archivo}': {str(e)}")
             import traceback
@@ -797,26 +971,35 @@ def main():
             continue
     
     # ============================
+    # GENERAR TABLA DE RESULTADOS
+    # ============================
+    print("\n" + "="*60)
+    print("     GENERANDO TABLA DE RESULTADOS")
+    print("="*60)
+    
+    # Mostrar tabla en consola
+    log_global.generar_tabla()
+    
+    # Exportar a CSV
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    nombre_csv = f"resultados_cvrp_{timestamp}.csv"
+    log_global.exportar_csv(nombre_csv)
+    
+    # ============================
     # RESUMEN FINAL
     # ============================
+    print(f"\n{'='*60}")
+    print("     RESUMEN FINAL DE RESULTADOS")
+    print(f"{'='*60}\n")
     
-    if resultados:
-        print(f"\n{'='*60}")
-        print(" RESUMEN FINAL DE RESULTADOS")
-        print(f"{'='*60}\n")
-        
-        for i, res in enumerate(resultados, 1):
-            inst = res['instancia']
-            sol = res['solucion']
-            hist = res['historial']
-            
-            print(f"Instancia {i}: {res['archivo']}")
-            print(f"  Nombre: {inst.nombre}")
-            print(f"  Clientes: {len(inst.clientes)}")
-            print(f"  Vehículos: {inst.num_vehiculos}")
-            print(f"  Mejor costo: {sol.get_costo():.2f}")
-            print(f"  Tiempo: {hist['tiempo_total']:.2f} seg")
-            print(f"  Iteraciones: {hist['iteraciones_totales']}")
+    for nombre_inst, resultados in resultados_por_instancia.items():
+        if resultados:
+            costos = [r['costo'] for r in resultados]
+            print(f"{nombre_inst}:")
+            print(f"  Mejor costo: {min(costos):.2f}")
+            print(f"  Peor costo: {max(costos):.2f}")
+            print(f"  Media: {np.mean(costos):.2f}")
+            print(f"  Desviación estándar: {np.std(costos, ddof=1):.2f}")
             print()
 
 
