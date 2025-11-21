@@ -75,6 +75,9 @@ class InstanciaCVRP:
         
         # Calcular matriz de distancias
         self.matriz_distancia = self._calcular_matriz_distancias()
+        
+        # MEJORA: Pre-calcular diccionario de demandas para acceso rápido
+        self.demandas_dict = {n.id: n.demanda for n in self.nodos}
     
     def _calcular_matriz_distancias(self):
         """Calcula la matriz de distancias euclidianas entre todos los nodos"""
@@ -82,11 +85,12 @@ class InstanciaCVRP:
         matriz = [[0.0] * n for _ in range(n)]
         
         for i in range(n):
-            for j in range(n):
-                if i != j:
-                    dx = self.nodos[i].x - self.nodos[j].x
-                    dy = self.nodos[i].y - self.nodos[j].y
-                    matriz[i][j] = math.hypot(dx, dy)
+            for j in range(i + 1, n):  # MEJORA: Solo calcular mitad de la matriz (simétrica)
+                dx = self.nodos[i].x - self.nodos[j].x
+                dy = self.nodos[i].y - self.nodos[j].y
+                dist = math.hypot(dx, dy)
+                matriz[i][j] = dist
+                matriz[j][i] = dist  # Simetría
         
         return matriz
     
@@ -106,50 +110,47 @@ class Solucion:
     
     def copiar(self):
         """Crea una copia profunda de la solución"""
-        return Solucion(
-            self.instancia,
-            [ruta[:] for ruta in self.rutas]  # Copiar cada lista de ruta
-        )
+        nueva = Solucion(self.instancia, [ruta[:] for ruta in self.rutas])
+        nueva._costo_total = self._costo_total  # MEJORA: Copiar caché si existe
+        nueva._cargas = self._cargas[:] if self._cargas else None
+        return nueva
     
     def calcular_costo_total(self):
         """Calcula el costo total de todas las rutas"""
         costo = 0.0
         deposito_id = self.instancia.deposito.id
+        distancia_func = self.instancia.distancia  # MEJORA: Cache de función
         
         for ruta in self.rutas:
             if not ruta:  # Ruta vacía
                 continue
             
             # Depósito -> primer cliente
-            costo += self.instancia.distancia(deposito_id, ruta[0])
+            costo += distancia_func(deposito_id, ruta[0])
             
             # Entre clientes consecutivos
             for i in range(len(ruta) - 1):
-                costo += self.instancia.distancia(ruta[i], ruta[i + 1])
+                costo += distancia_func(ruta[i], ruta[i + 1])
             
             # Último cliente -> depósito
-            costo += self.instancia.distancia(ruta[-1], deposito_id)
+            costo += distancia_func(ruta[-1], deposito_id)
         
         self._costo_total = costo
         return costo
     
     def calcular_cargas(self):
         """Calcula la carga de cada vehículo"""
-        cargas = []
-        demandas = {n.id: n.demanda for n in self.instancia.nodos}
-        
-        for ruta in self.rutas:
-            carga = sum(demandas[cliente_id] for cliente_id in ruta)
-            cargas.append(carga)
-        
+        demandas = self.instancia.demandas_dict  # MEJORA: Usar diccionario pre-calculado
+        cargas = [sum(demandas[cliente_id] for cliente_id in ruta) for ruta in self.rutas]
         self._cargas = cargas
         return cargas
     
     def es_factible(self):
         """Verifica si la solución respeta las restricciones de capacidad"""
-        cargas = self.calcular_cargas()
+        if self._cargas is None:
+            self.calcular_cargas()
         capacidad = self.instancia.capacidad_vehiculo
-        return all(carga <= capacidad for carga in cargas)
+        return all(carga <= capacidad for carga in self._cargas)
     
     def get_costo(self):
         """Retorna el costo (calculándolo si no está en caché)"""
@@ -168,12 +169,14 @@ class Solucion:
         lineas = [f"Solución - Costo total: {self.get_costo():.2f}"]
         cargas = self.calcular_cargas()
         
-        for i, ruta in enumerate(self.rutas):
-            if ruta:
-                ruta_str = f"{deposito} -> " + " -> ".join(map(str, ruta)) + f" -> {deposito}"
-                lineas.append(f"  Vehículo {i}: {ruta_str} (Carga: {cargas[i]}/{self.instancia.capacidad_vehiculo})")
-            else:
-                lineas.append(f"  Vehículo {i}: No utilizado")
+        # MEJORA: Mostrar solo rutas no vacías
+        rutas_usadas = [(i, ruta, cargas[i]) for i, ruta in enumerate(self.rutas) if ruta]
+        
+        for i, ruta, carga in rutas_usadas:
+            ruta_str = f"{deposito} -> " + " -> ".join(map(str, ruta)) + f" -> {deposito}"
+            lineas.append(f"  Vehículo {i}: {ruta_str} (Carga: {carga}/{self.instancia.capacidad_vehiculo})")
+        
+        lineas.append(f"  Vehículos utilizados: {len(rutas_usadas)}/{self.instancia.num_vehiculos}")
         
         return "\n".join(lineas)
 
@@ -188,13 +191,14 @@ class LogResultados:
         self.nombre_instancia = nombre_instancia
         self.resultados = {}  # Diccionario por instancia
     
-    def agregar_ejecucion(self, instancia, numero_ejecucion, costo):
+    def agregar_ejecucion(self, instancia, numero_ejecucion, costo, tiempo=None):
         """Agrega el resultado de una ejecución"""
         if instancia not in self.resultados:
             self.resultados[instancia] = []
         self.resultados[instancia].append({
             'ejecucion': numero_ejecucion,
-            'costo': costo
+            'costo': costo,
+            'tiempo': tiempo
         })
     
     def calcular_estadisticas(self, instancia):
@@ -214,7 +218,6 @@ class LogResultados:
         print(f"TABLA DE RESULTADOS - {self.nombre_instancia}")
         print("="*80)
         
-        # Obtener todas las instancias
         instancias = sorted(self.resultados.keys())
         
         if not instancias:
@@ -242,7 +245,6 @@ class LogResultados:
                     fila += f" {'-':^12} |"
             print(fila)
         
-        # Separador antes de estadísticas
         print("-" * len(header))
         
         # Fila de media
@@ -257,7 +259,6 @@ class LogResultados:
         
         # Fila de desviación estándar
         fila_desv = "desviación |"
-        fila_desv += "\n estándar  |"
         for inst in instancias:
             _, desviacion = self.calcular_estadisticas(inst)
             if desviacion is not None:
@@ -311,7 +312,7 @@ class LogResultados:
             writer.writerow(fila_media)
             writer.writerow(fila_desv)
         
-        print(f"Resultados exportados a: {nombre_archivo}")
+        print(f"[OK] Resultados exportados a: {nombre_archivo}")
 
 
 # ============================
@@ -330,14 +331,12 @@ def leer_archivo_vrp(nombre_archivo):
     with open(nombre_archivo, 'r') as f:
         lineas = f.readlines()
     
-    # Variables para almacenar datos
     nombre = ""
     dimension = 0
     capacidad = 0
     coordenadas = {}
     demandas = {}
     
-    # Parsear el archivo
     seccion_actual = None
     
     for linea in lineas:
@@ -346,23 +345,18 @@ def leer_archivo_vrp(nombre_archivo):
         if not linea or linea == 'EOF':
             continue
         
-        # Leer metadatos
         if linea.startswith('NAME'):
             nombre = linea.split(':')[1].strip()
         elif linea.startswith('DIMENSION'):
             dimension = int(linea.split(':')[1].strip())
         elif linea.startswith('CAPACITY'):
             capacidad = int(linea.split(':')[1].strip())
-        
-        # Detectar secciones
         elif linea == 'NODE_COORD_SECTION':
             seccion_actual = 'coords'
         elif linea == 'DEMAND_SECTION':
             seccion_actual = 'demands'
         elif linea == 'DEPOT_SECTION':
             seccion_actual = 'depot'
-        
-        # Leer datos de cada sección
         elif seccion_actual == 'coords':
             partes = linea.split()
             if len(partes) == 3:
@@ -370,7 +364,6 @@ def leer_archivo_vrp(nombre_archivo):
                 x = float(partes[1])
                 y = float(partes[2])
                 coordenadas[nodo_id] = (x, y)
-        
         elif seccion_actual == 'demands':
             partes = linea.split()
             if len(partes) == 2:
@@ -387,9 +380,7 @@ def leer_archivo_vrp(nombre_archivo):
         demanda = demandas.get(viejo_id, 0)
         nodos.append(Nodo(nuevo_id, x, y, demanda))
     
-    # Crear instancia
     instancia = InstanciaCVRP(nombre, nodos, capacidad)
-    
     return instancia
 
 
@@ -399,7 +390,7 @@ def leer_archivo_vrp(nombre_archivo):
 def generar_solucion_inicial_voraz(instancia):
     """
     Genera una solución inicial usando heurística del vecino más cercano
-    Construye rutas secuencialmente, agregando el cliente no visitado más cercano
+    MEJORADO: Optimización de rendimiento y mejor manejo de capacidad
     """
     clientes_no_asignados = set(c.id for c in instancia.clientes)
     rutas = [[] for _ in range(instancia.num_vehiculos)]
@@ -407,7 +398,8 @@ def generar_solucion_inicial_voraz(instancia):
     vehiculo_actual = 0
     
     deposito_id = instancia.deposito.id
-    demandas = {n.id: n.demanda for n in instancia.nodos}
+    demandas = instancia.demandas_dict  # MEJORA: Usar diccionario pre-calculado
+    distancia_func = instancia.distancia  # MEJORA: Cache de función
     
     while clientes_no_asignados:
         # Determinar desde dónde buscar el más cercano
@@ -425,7 +417,7 @@ def generar_solucion_inicial_voraz(instancia):
             
             # Verificar si cabe en el vehículo actual
             if cargas[vehiculo_actual] + demanda_cliente <= instancia.capacidad_vehiculo:
-                distancia = instancia.distancia(ultimo_nodo, cliente_id)
+                distancia = distancia_func(ultimo_nodo, cliente_id)
                 if distancia < mejor_distancia:
                     mejor_distancia = distancia
                     mejor_cliente = cliente_id
@@ -444,16 +436,14 @@ def generar_solucion_inicial_voraz(instancia):
                 instancia.num_vehiculos += 1
                 rutas.append([])
                 cargas.append(0)
-                print(f"[INFO] Agregando vehículo adicional. Total vehículos: {instancia.num_vehiculos}")
     
     solucion = Solucion(instancia, rutas)
     
-    # Verificar que la solución sea factible
+    # Verificar factibilidad
     if not solucion.es_factible():
         print("[ERROR CRÍTICO] No se pudo generar una solución inicial factible")
-        print("Verificando cargas:")
-        cargas = solucion.calcular_cargas()
-        for i, carga in enumerate(cargas):
+        cargas_calc = solucion.calcular_cargas()
+        for i, carga in enumerate(cargas_calc):
             if carga > instancia.capacidad_vehiculo:
                 print(f"  Vehículo {i}: Carga {carga} > Capacidad {instancia.capacidad_vehiculo}")
     
@@ -464,10 +454,8 @@ def generar_solucion_inicial_voraz(instancia):
 # OPERADORES DE VECINDAD
 # ============================
 def swap_intra_ruta(solucion):
-    """Operador 2-opt: intercambia dos clientes dentro de la misma ruta"""
+    """Operador: intercambia dos clientes dentro de la misma ruta"""
     nueva_solucion = solucion.copiar()
-    
-    # Seleccionar ruta no vacía aleatoriamente
     rutas_no_vacias = [i for i, r in enumerate(nueva_solucion.rutas) if len(r) >= 2]
     
     if not rutas_no_vacias:
@@ -475,70 +463,50 @@ def swap_intra_ruta(solucion):
     
     idx_ruta = random.choice(rutas_no_vacias)
     ruta = nueva_solucion.rutas[idx_ruta]
-    
-    # Seleccionar dos posiciones distintas
     i, j = random.sample(range(len(ruta)), 2)
-    
-    # Intercambiar
     ruta[i], ruta[j] = ruta[j], ruta[i]
-    
     nueva_solucion.invalidar_cache()
     return nueva_solucion
 
 
 def swap_inter_ruta(solucion):
-    """
-    Intercambia un cliente entre dos rutas distintas
-    Verifica que se respete la capacidad
-    """
+    """Operador: intercambia un cliente entre dos rutas distintas"""
     nueva_solucion = solucion.copiar()
     instancia = solucion.instancia
-    
-    # Seleccionar dos rutas no vacías distintas
     rutas_no_vacias = [i for i, r in enumerate(nueva_solucion.rutas) if len(r) > 0]
     
     if len(rutas_no_vacias) < 2:
         return nueva_solucion
     
     idx_ruta1, idx_ruta2 = random.sample(rutas_no_vacias, 2)
-    
-    # Seleccionar un cliente de cada ruta
     pos1 = random.randint(0, len(nueva_solucion.rutas[idx_ruta1]) - 1)
     pos2 = random.randint(0, len(nueva_solucion.rutas[idx_ruta2]) - 1)
     
     cliente1 = nueva_solucion.rutas[idx_ruta1][pos1]
     cliente2 = nueva_solucion.rutas[idx_ruta2][pos2]
     
-    # Verificar factibilidad del intercambio
-    demandas = {n.id: n.demanda for n in instancia.nodos}
+    demandas = instancia.demandas_dict  # MEJORA: Usar diccionario pre-calculado
     
-    # Calcular cargas actuales
+    # Calcular cargas actuales (MEJORA: más eficiente)
     carga1 = sum(demandas[c] for c in nueva_solucion.rutas[idx_ruta1])
     carga2 = sum(demandas[c] for c in nueva_solucion.rutas[idx_ruta2])
     
-    # Calcular cargas después del swap
     nueva_carga1 = carga1 - demandas[cliente1] + demandas[cliente2]
     nueva_carga2 = carga2 - demandas[cliente2] + demandas[cliente1]
     
-    # Solo hacer el swap si es factible
     if (nueva_carga1 <= instancia.capacidad_vehiculo and
         nueva_carga2 <= instancia.capacidad_vehiculo):
         nueva_solucion.rutas[idx_ruta1][pos1] = cliente2
         nueva_solucion.rutas[idx_ruta2][pos2] = cliente1
+        nueva_solucion.invalidar_cache()
     
-    nueva_solucion.invalidar_cache()
     return nueva_solucion
 
 
 def relocate(solucion):
-    """
-    Mueve un cliente de una ruta a otra
-    Verifica que se respete la capacidad de la ruta destino
-    """
+    """Operador: mueve un cliente de una ruta a otra"""
     nueva_solucion = solucion.copiar()
     instancia = solucion.instancia
-    
-    # Seleccionar ruta origen no vacía
     rutas_no_vacias = [i for i, r in enumerate(nueva_solucion.rutas) if len(r) > 0]
     
     if not rutas_no_vacias:
@@ -546,44 +514,29 @@ def relocate(solucion):
     
     idx_origen = random.choice(rutas_no_vacias)
     ruta_origen = nueva_solucion.rutas[idx_origen]
-    
-    # Seleccionar cliente a mover
     pos = random.randint(0, len(ruta_origen) - 1)
     cliente = ruta_origen[pos]
     
-    # Seleccionar ruta destino diferente
     rutas_disponibles = [i for i in range(instancia.num_vehiculos) if i != idx_origen]
-    
     if not rutas_disponibles:
         return nueva_solucion
     
     idx_destino = random.choice(rutas_disponibles)
-    
-    # Verificar factibilidad
-    demandas = {n.id: n.demanda for n in instancia.nodos}
+    demandas = instancia.demandas_dict  # MEJORA
     carga_destino = sum(demandas[c] for c in nueva_solucion.rutas[idx_destino])
     
     if carga_destino + demandas[cliente] <= instancia.capacidad_vehiculo:
-        # Realizar el movimiento
         ruta_origen.pop(pos)
-        
-        # Insertar en posición aleatoria de la ruta destino
-        if nueva_solucion.rutas[idx_destino]:
-            pos_insercion = random.randint(0, len(nueva_solucion.rutas[idx_destino]))
-        else:
-            pos_insercion = 0
-        
+        pos_insercion = random.randint(0, len(nueva_solucion.rutas[idx_destino])) if nueva_solucion.rutas[idx_destino] else 0
         nueva_solucion.rutas[idx_destino].insert(pos_insercion, cliente)
+        nueva_solucion.invalidar_cache()
     
-    nueva_solucion.invalidar_cache()
     return nueva_solucion
 
 
 def reverse_subruta(solucion):
     """Operador 2-opt: invierte un segmento de una ruta"""
     nueva_solucion = solucion.copiar()
-    
-    # Seleccionar ruta no vacía con al menos 2 elementos
     rutas_validas = [i for i, r in enumerate(nueva_solucion.rutas) if len(r) >= 2]
     
     if not rutas_validas:
@@ -591,50 +544,99 @@ def reverse_subruta(solucion):
     
     idx_ruta = random.choice(rutas_validas)
     ruta = nueva_solucion.rutas[idx_ruta]
-    
-    # Seleccionar dos puntos de corte
     i, j = sorted(random.sample(range(len(ruta) + 1), 2))
-    
-    # Invertir el segmento entre i y j
     ruta[i:j] = reversed(ruta[i:j])
-    
     nueva_solucion.invalidar_cache()
     return nueva_solucion
 
-def two_opt_inter_route(rutas, demandas, capacidad):
-    import random
-    if len(rutas) < 2:
-        return None
 
-    # Seleccionar dos rutas distintas
-    r1, r2 = random.sample(range(len(rutas)), 2)
-
-    ruta1 = rutas[r1]
-    ruta2 = rutas[r2]
-
-    if len(ruta1) < 2 or len(ruta2) < 2:
-        return None
-
-    # Cortes aleatorios dentro de ambas rutas
-    i = random.randint(1, len(ruta1) - 1)
-    j = random.randint(1, len(ruta2) - 1)
-
-    # Crear nuevas rutas intercambiando segmentos
-    nueva1 = ruta1[:i] + ruta2[j:]
-    nueva2 = ruta2[:j] + ruta1[i:]
-
+def two_opt_inter_route(solucion):
+    """
+    Operador 2-opt inter-ruta VERDADERO:
+    Selecciona una arista en cada ruta, las rompe y reconecta de forma cruzada.
+    Esto puede eliminar cruces entre rutas y mejorar la solución global.
+    """
+    nueva_solucion = solucion.copiar()
+    instancia = solucion.instancia
+    
+    if instancia.num_vehiculos < 2:
+        return nueva_solucion
+    
+    # Seleccionar dos rutas distintas no vacías
+    rutas_no_vacias = [i for i, r in enumerate(nueva_solucion.rutas) if len(r) >= 2]
+    
+    if len(rutas_no_vacias) < 2:
+        return nueva_solucion
+    
+    r1, r2 = random.sample(rutas_no_vacias, 2)
+    ruta1 = nueva_solucion.rutas[r1][:]
+    ruta2 = nueva_solucion.rutas[r2][:]
+    
+    # Seleccionar posiciones de corte (aristas)
+    # Posición i significa cortar entre ruta1[i] y ruta1[i+1]
+    i = random.randint(0, len(ruta1) - 1)
+    j = random.randint(0, len(ruta2) - 1)
+    
+    # Crear nuevas rutas aplicando 2-opt inter-ruta
+    # Ruta1: mantiene [0..i] + toma [j+1..fin] de ruta2 (invertido)
+    # Ruta2: mantiene [0..j] + toma [i+1..fin] de ruta1 (invertido)
+    nueva1 = ruta1[:i+1] + ruta2[j+1:][::-1]
+    nueva2 = ruta2[:j+1] + ruta1[i+1:][::-1]
+    
     # Validar capacidad
+    demandas = instancia.demandas_dict
     demanda1 = sum(demandas[c] for c in nueva1)
     demanda2 = sum(demandas[c] for c in nueva2)
+    
+    if demanda1 <= instancia.capacidad_vehiculo and demanda2 <= instancia.capacidad_vehiculo:
+        nueva_solucion.rutas[r1] = nueva1
+        nueva_solucion.rutas[r2] = nueva2
+        nueva_solucion.invalidar_cache()
+    
+    return nueva_solucion
 
-    if demanda1 > capacidad or demanda2 > capacidad:
-        return None
 
-    nuevas_rutas = rutas.copy()
-    nuevas_rutas[r1] = nueva1
-    nuevas_rutas[r2] = nueva2
+def exchange_inter_route(solucion):
+    """
+    Operador Exchange/Segment Swap inter-ruta:
+    Intercambia segmentos completos entre dos rutas sin invertir.
+    Este es el operador que estaba implementado antes como "two_opt_inter_route".
+    """
+    nueva_solucion = solucion.copiar()
+    instancia = solucion.instancia
+    
+    if instancia.num_vehiculos < 2:
+        return nueva_solucion
+    
+    rutas_no_vacias = [i for i, r in enumerate(nueva_solucion.rutas) if len(r) >= 2]
+    
+    if len(rutas_no_vacias) < 2:
+        return nueva_solucion
+    
+    r1, r2 = random.sample(rutas_no_vacias, 2)
+    ruta1 = nueva_solucion.rutas[r1]
+    ruta2 = nueva_solucion.rutas[r2]
+    
+    # Cortes aleatorios
+    i = random.randint(1, len(ruta1) - 1)
+    j = random.randint(1, len(ruta2) - 1)
+    
+    # Intercambiar segmentos (sin invertir)
+    nueva1 = ruta1[:i] + ruta2[j:]
+    nueva2 = ruta2[:j] + ruta1[i:]
+    
+    # Validar capacidad
+    demandas = instancia.demandas_dict
+    demanda1 = sum(demandas[c] for c in nueva1)
+    demanda2 = sum(demandas[c] for c in nueva2)
+    
+    if demanda1 <= instancia.capacidad_vehiculo and demanda2 <= instancia.capacidad_vehiculo:
+        nueva_solucion.rutas[r1] = nueva1
+        nueva_solucion.rutas[r2] = nueva2
+        nueva_solucion.invalidar_cache()
+    
+    return nueva_solucion
 
-    return nuevas_rutas
 
 def generar_vecino(solucion):
     """Genera una solución vecina aplicando un operador aleatorio"""
@@ -646,7 +648,6 @@ def generar_vecino(solucion):
         two_opt_inter_route
     ]
     
-    # Seleccionar operador aleatorio
     operador = random.choice(operadores)
     return operador(solucion)
 
@@ -655,11 +656,7 @@ def generar_vecino(solucion):
 # RECOCIDO SIMULADO
 # ============================
 def criterio_metropolis(costo_actual, costo_nuevo, temperatura):
-    """
-    Decide si aceptar una nueva solución según el criterio de Metropolis
-    - Si el nuevo costo es mejor (menor), siempre acepta
-    - Si el nuevo costo es peor (mayor), acepta con probabilidad exp(-delta/T)
-    """
+    """Criterio de aceptación de Metropolis"""
     if costo_nuevo < costo_actual:
         return True
     
@@ -672,43 +669,24 @@ def criterio_metropolis(costo_actual, costo_nuevo, temperatura):
 
 
 def recocido_simulado(instancia, solucion_inicial=None, verbose=True):
-    """
-    Algoritmo de Recocido Simulado para CVRP
-    
-    Args:
-        instancia: InstanciaCVRP a resolver
-        solucion_inicial: Solución inicial (si es None, genera una voraz)
-        verbose: si True, imprime progreso
-    
-    Returns:
-        Mejor solución encontrada, historial de convergencia
-    """
+    """Algoritmo de Recocido Simulado para CVRP"""
     inicio = time.time()
     
-    # Generar solución inicial si no se proporciona
     if solucion_inicial is None:
         if verbose:
             print("Generando solución inicial voraz...")
         solucion_inicial = generar_solucion_inicial_voraz(instancia)
     
-    # Verificar factibilidad inicial y rechazar si no es válida
     if not solucion_inicial.es_factible():
         print("[ERROR CRÍTICO] La solución inicial no es factible.")
-        print("No se puede continuar con el recocido simulado.")
-        cargas = solucion_inicial.calcular_cargas()
-        for i, carga in enumerate(cargas):
-            if carga > instancia.capacidad_vehiculo:
-                print(f"  Vehículo {i}: Carga {carga} > Capacidad {instancia.capacidad_vehiculo}")
         return None, None
     
-    # Inicializar
     solucion_actual = solucion_inicial.copiar()
     costo_actual = solucion_actual.get_costo()
     
     mejor_solucion = solucion_actual.copiar()
     mejor_costo = costo_actual
     
-    # Historial para gráfico de convergencia
     historial_mejor_costo = [mejor_costo]
     historial_temperatura = [TEMPERATURA_INICIAL]
     historial_iteracion = [0]
@@ -727,27 +705,28 @@ def recocido_simulado(instancia, solucion_inicial=None, verbose=True):
         print(f"T_inicial: {TEMPERATURA_INICIAL}, T_min: {TEMPERATURA_MINIMA}, alpha: {ALPHA}")
         print(f"\nIniciando búsqueda...\n")
     
-    # Bucle principal
+    # MEJORA: Contador de intentos fallidos para debugging
+    intentos_fallidos = 0
+    total_intentos = 0
+    
     while temperatura > TEMPERATURA_MINIMA and iteraciones_sin_mejora < MAX_ITERACIONES_SIN_MEJORA:
         for _ in range(ITERACIONES_POR_TEMPERATURA):
             iteracion += 1
             iteraciones_sin_mejora += 1
+            total_intentos += 1
             
-            # Generar solución vecina
             solucion_vecina = generar_vecino(solucion_actual)
             
-            # Verificar factibilidad ANTES de calcular costo
             if not solucion_vecina.es_factible():
+                intentos_fallidos += 1
                 continue
             
             costo_vecino = solucion_vecina.get_costo()
             
-            # Criterio de aceptación
             if criterio_metropolis(costo_actual, costo_vecino, temperatura):
                 solucion_actual = solucion_vecina
                 costo_actual = costo_vecino
                 
-                # Actualizar mejor solución si corresponde
                 if costo_actual < mejor_costo:
                     mejor_solucion = solucion_actual.copiar()
                     mejor_costo = costo_actual
@@ -756,19 +735,16 @@ def recocido_simulado(instancia, solucion_inicial=None, verbose=True):
                     if verbose:
                         print(f"Iter {iteracion:6d} | T={temperatura:8.2f} | Mejor costo: {mejor_costo:.2f} ✓")
         
-        # Registrar progreso
         historial_mejor_costo.append(mejor_costo)
         historial_temperatura.append(temperatura)
         historial_iteracion.append(iteracion)
         
-        # Enfriar temperatura
         temperatura *= ALPHA
     
     tiempo_total = time.time() - inicio
     
-    # Verificación final de factibilidad
     if not mejor_solucion.es_factible():
-        print("[ERROR] La mejor solución encontrada no es factible. Esto no debería ocurrir.")
+        print("[ERROR] La mejor solución encontrada no es factible.")
     
     if verbose:
         print(f"\n=== RESULTADO FINAL ===")
@@ -778,9 +754,11 @@ def recocido_simulado(instancia, solucion_inicial=None, verbose=True):
         print(f"Mejora: {mejora:.2f}%")
         print(f"Iteraciones totales: {iteracion}")
         print(f"Tiempo: {tiempo_total:.2f} segundos")
+        # MEJORA: Estadísticas de intentos
+        tasa_exito = ((total_intentos - intentos_fallidos) / total_intentos * 100) if total_intentos > 0 else 0
+        print(f"Tasa de éxito de vecinos factibles: {tasa_exito:.1f}%")
         print(f"\n{mejor_solucion}")
     
-    # Historial de convergencia
     historial = {
         'iteraciones': historial_iteracion,
         'mejor_costo': historial_mejor_costo,
@@ -807,37 +785,39 @@ def graficar_solucion(solucion, titulo="Solución CVRP"):
     
     fig, ax = plt.subplots(figsize=(14, 10))
     
-    # Colores para cada vehículo - usar paleta con más colores
+    # MEJORA: Usar diferentes estilos de línea si hay muchos vehículos
     colores = plt.cm.tab20(range(len(solucion.rutas)))
+    estilos_linea = ['-', '--', '-.', ':']
     
-    # Dibujar rutas
     rutas_dibujadas = 0
     for i, ruta in enumerate(solucion.rutas):
         if not ruta:
             continue
         
-        # Construir ruta completa: depósito -> clientes -> depósito
         ruta_completa = [deposito] + ruta + [deposito]
         xs = [coords[nodo][0] for nodo in ruta_completa]
         ys = [coords[nodo][1] for nodo in ruta_completa]
         
-        ax.plot(xs, ys, 'o-', color=colores[i], linewidth=2,
-                markersize=6, label=f'Vehículo {i}')
+        # MEJORA: Alternar estilos de línea para mejor diferenciación
+        estilo = estilos_linea[i % len(estilos_linea)] if len(solucion.rutas) > 20 else '-'
+        
+        ax.plot(xs, ys, marker='o', linestyle=estilo, color=colores[i], 
+                linewidth=2, markersize=6, label=f'Vehículo {i}')
         rutas_dibujadas += 1
     
     # Marcar depósito
     ax.plot(coords[deposito][0], coords[deposito][1], 's',
             color='red', markersize=15, label='Depósito', zorder=5)
     
-    # Mostrar leyenda fuera del área de graficado
+    # MEJORA: Leyenda más compacta
     if rutas_dibujadas > 15:
         ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1),
-                  ncol=2, fontsize=8, framealpha=0.9)
+                  ncol=2, fontsize=7, framealpha=0.9)
     else:
         ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1),
                   fontsize=9, framealpha=0.9)
     
-    ax.set_title(f"{titulo}\nCosto total: {solucion.get_costo():.2f}", fontsize=12)
+    ax.set_title(f"{titulo}\nCosto total: {solucion.get_costo():.2f}", fontsize=12, fontweight='bold')
     ax.set_xlabel("Coordenada X", fontsize=10)
     ax.set_ylabel("Coordenada Y", fontsize=10)
     ax.grid(True, alpha=0.3)
@@ -853,24 +833,26 @@ def graficar_convergencia(historial, titulo="Convergencia del Recocido Simulado"
         print("[Aviso] matplotlib no disponible. No se puede graficar.")
         return
     
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
     
     # Gráfico de mejor costo
     ax1.plot(historial['iteraciones'], historial['mejor_costo'],
-             'b-', linewidth=2)
-    ax1.set_xlabel('Iteración')
-    ax1.set_ylabel('Mejor Costo')
-    ax1.set_title('Evolución del Mejor Costo')
+             'b-', linewidth=2, label='Mejor costo')
+    ax1.set_xlabel('Iteración', fontsize=10)
+    ax1.set_ylabel('Mejor Costo', fontsize=10)
+    ax1.set_title('Evolución del Mejor Costo', fontsize=11, fontweight='bold')
     ax1.grid(True, alpha=0.3)
+    ax1.legend()
     
     # Gráfico de temperatura
     ax2.plot(historial['iteraciones'], historial['temperatura'],
-             'r-', linewidth=2)
-    ax2.set_xlabel('Iteración')
-    ax2.set_ylabel('Temperatura')
-    ax2.set_title('Esquema de Enfriamiento')
+             'r-', linewidth=2, label='Temperatura')
+    ax2.set_xlabel('Iteración', fontsize=10)
+    ax2.set_ylabel('Temperatura (escala log)', fontsize=10)
+    ax2.set_title('Esquema de Enfriamiento', fontsize=11, fontweight='bold')
     ax2.set_yscale('log')
     ax2.grid(True, alpha=0.3)
+    ax2.legend()
     
     plt.suptitle(titulo, fontsize=14, fontweight='bold')
     plt.tight_layout()
@@ -884,18 +866,16 @@ def main():
     """Función principal para ejecutar el recocido simulado en las 3 instancias"""
     print("="*60)
     print("     CVRP - RECOCIDO SIMULADO")
+    print("     Versión Mejorada con Estadísticas")
     print("="*60)
     
-    # Archivos de instancias a resolver
     archivos_instancias = [
         "Facil.vrp",
         "Medio.vrp",
         "Dificil.vrp"
     ]
     
-    # Crear registro de resultados global
     log_global = LogResultados("Todas las Instancias")
-    
     resultados_por_instancia = {}
     
     for i, archivo in enumerate(archivos_instancias, 1):
@@ -905,7 +885,10 @@ def main():
         
         try:
             # Leer instancia
+            print(f"Cargando instancia {archivo}...")
             instancia = leer_archivo_vrp(archivo)
+            print(f"[OK] Instancia cargada: {len(instancia.clientes)} clientes, "
+                  f"{instancia.num_vehiculos} vehículos, capacidad {instancia.capacidad_vehiculo}")
             
             # Ejecutar múltiples veces
             print(f"\nEjecutando {NUMERO_EJECUCIONES} ejecuciones...")
@@ -913,6 +896,7 @@ def main():
             nombre_corto = archivo.replace('.vrp', '')
             resultados_por_instancia[nombre_corto] = []
             
+            # MEJORA: Barra de progreso simple
             for ejecucion in range(1, NUMERO_EJECUCIONES + 1):
                 print(f"\n--- Ejecución {ejecucion}/{NUMERO_EJECUCIONES} ---")
                 
@@ -920,22 +904,24 @@ def main():
                 random.seed(SEMILLA_ALEATORIA + ejecucion)
                 
                 # Ejecutar recocido simulado
+                inicio_ejec = time.time()
                 mejor_solucion, historial = recocido_simulado(instancia, verbose=False)
+                tiempo_ejec = time.time() - inicio_ejec
                 
-                # Verificar que se obtuvo una solución válida
                 if mejor_solucion is None:
                     print(f"[ERROR] No se pudo resolver la ejecución {ejecucion}")
                     continue
                 
                 costo_final = mejor_solucion.get_costo()
-                print(f"Costo obtenido: {costo_final:.2f}")
+                print(f"Costo obtenido: {costo_final:.2f} | Tiempo: {tiempo_ejec:.2f}s")
                 
                 # Registrar resultado
-                log_global.agregar_ejecucion(nombre_corto, ejecucion, costo_final)
+                log_global.agregar_ejecucion(nombre_corto, ejecucion, costo_final, tiempo_ejec)
                 resultados_por_instancia[nombre_corto].append({
                     'solucion': mejor_solucion,
                     'historial': historial,
-                    'costo': costo_final
+                    'costo': costo_final,
+                    'tiempo': tiempo_ejec
                 })
             
             # Mostrar mejor solución de esta instancia
@@ -945,9 +931,21 @@ def main():
                 
                 mejor_resultado = resultados_por_instancia[nombre_corto][mejor_idx]
                 
-                print(f"\n=== MEJOR SOLUCIÓN DE {nombre_corto} ===")
+                print(f"\n{'='*60}")
+                print(f"MEJOR SOLUCIÓN DE {nombre_corto.upper()}")
+                print(f"{'='*60}")
                 print(f"Ejecución: {mejor_idx + 1}")
+                print(f"Tiempo: {mejor_resultado['tiempo']:.2f}s")
                 print(mejor_resultado['solucion'])
+                
+                # MEJORA: Mostrar estadísticas de todas las ejecuciones
+                costos = [r['costo'] for r in resultados_por_instancia[nombre_corto]]
+                tiempos = [r['tiempo'] for r in resultados_por_instancia[nombre_corto]]
+                print(f"\nEstadísticas de {NUMERO_EJECUCIONES} ejecuciones:")
+                print(f"  Mejor costo: {min(costos):.2f}")
+                print(f"  Peor costo: {max(costos):.2f}")
+                print(f"  Costo medio: {np.mean(costos):.2f} ± {np.std(costos, ddof=1):.2f}")
+                print(f"  Tiempo medio: {np.mean(tiempos):.2f}s ± {np.std(tiempos, ddof=1):.2f}s")
                 
                 # Graficar mejor solución
                 if MOSTRAR_GRAFICO_FINAL:
@@ -973,34 +971,43 @@ def main():
     # ============================
     # GENERAR TABLA DE RESULTADOS
     # ============================
-    print("\n" + "="*60)
-    print("     GENERANDO TABLA DE RESULTADOS")
-    print("="*60)
-    
-    # Mostrar tabla en consola
-    log_global.generar_tabla()
-    
-    # Exportar a CSV
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    nombre_csv = f"resultados_cvrp_{timestamp}.csv"
-    log_global.exportar_csv(nombre_csv)
-    
-    # ============================
-    # RESUMEN FINAL
-    # ============================
-    print(f"\n{'='*60}")
-    print("     RESUMEN FINAL DE RESULTADOS")
-    print(f"{'='*60}\n")
-    
-    for nombre_inst, resultados in resultados_por_instancia.items():
-        if resultados:
-            costos = [r['costo'] for r in resultados]
-            print(f"{nombre_inst}:")
-            print(f"  Mejor costo: {min(costos):.2f}")
-            print(f"  Peor costo: {max(costos):.2f}")
-            print(f"  Media: {np.mean(costos):.2f}")
-            print(f"  Desviación estándar: {np.std(costos, ddof=1):.2f}")
-            print()
+    if resultados_por_instancia:
+        print("\n" + "="*60)
+        print("     GENERANDO TABLA DE RESULTADOS")
+        print("="*60)
+        
+        log_global.generar_tabla()
+        
+        # Exportar a CSV
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        nombre_csv = f"resultados_cvrp_{timestamp}.csv"
+        log_global.exportar_csv(nombre_csv)
+        
+        # ============================
+        # RESUMEN FINAL DETALLADO
+        # ============================
+        print(f"\n{'='*60}")
+        print("     RESUMEN FINAL DE RESULTADOS")
+        print(f"{'='*60}\n")
+        
+        for nombre_inst, resultados in sorted(resultados_por_instancia.items()):
+            if resultados:
+                costos = [r['costo'] for r in resultados]
+                tiempos = [r['tiempo'] for r in resultados]
+                
+                print(f"{nombre_inst.upper()}:")
+                print(f"  Mejor costo:       {min(costos):12.2f}")
+                print(f"  Peor costo:        {max(costos):12.2f}")
+                print(f"  Costo medio:       {np.mean(costos):12.2f}")
+                print(f"  Desv. estándar:    {np.std(costos, ddof=1):12.2f}")
+                print(f"  Coef. variación:   {(np.std(costos, ddof=1) / np.mean(costos) * 100):11.2f}%")
+                print(f"  Tiempo medio:      {np.mean(tiempos):12.2f}s")
+                print()
+        
+        print("="*60)
+        print("Proceso completado exitosamente.")
+        print(f"Resultados guardados en: {nombre_csv}")
+        print("="*60)
 
 
 if __name__ == "__main__":
