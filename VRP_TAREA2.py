@@ -40,7 +40,7 @@ MAX_ITERACIONES_SIN_MEJORA = 1000000  # Parada adicional si no mejora
 # Número de ejecuciones para estadísticas
 NUMERO_EJECUCIONES = 10
 
-# Semilla aleatoria para reproducibilidad (comentar para resultados aleatorios)
+# Semilla aleatoria para reproducibilidad
 SEMILLA_ALEATORIA = 42
 
 # Configuración de visualización
@@ -51,7 +51,6 @@ MOSTRAR_CONVERGENCIA = True  # Mostrar gráfico de convergencia del algoritmo
 # ESTRUCTURAS DE DATOS
 # ============================
 Nodo = namedtuple("Nodo", ["id", "x", "y", "demanda"])
-
 
 class InstanciaCVRP:
     """Contiene toda la información de una instancia CVRP"""
@@ -549,7 +548,6 @@ def reverse_subruta(solucion):
     nueva_solucion.invalidar_cache()
     return nueva_solucion
 
-
 def two_opt_inter_route(solucion):
     """
     Operador 2-opt inter-ruta VERDADERO:
@@ -645,7 +643,8 @@ def generar_vecino(solucion):
         swap_inter_ruta,
         relocate,
         reverse_subruta,
-        two_opt_inter_route
+        two_opt_inter_route,
+        exchange_inter_route
     ]
     
     operador = random.choice(operadores)
